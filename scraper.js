@@ -88,10 +88,7 @@ class CreatorHooksScraper {
           const hookTitle = heading.textContent.trim();
 
           // Skip advertisement sections
-          if (
-            hookTitle.includes("Creator Hooks Pro") ||
-            hookTitle === "Flop of the Week"
-          ) {
+          if (hookTitle.includes("Creator Hooks Pro")) {
             return;
           }
 
@@ -99,7 +96,7 @@ class CreatorHooksScraper {
           let nextElement = heading.nextElementSibling;
           let framework = "";
           let hookScore = "";
-          let whyThisWorks = "";
+          let analysis = "";
           let collectingWhy = false;
           let extractedTitle = "";
 
@@ -124,10 +121,13 @@ class CreatorHooksScraper {
               }
             }
 
-            // Extract Why this works
+            // Extract Why this works or Why this flopped
             if (text.startsWith("Why this works:")) {
               collectingWhy = true;
-              whyThisWorks = text.replace("Why this works:", "").trim();
+              analysis = text.replace("Why this works:", "").trim();
+            } else if (text.startsWith("Why this flopped:")) {
+              collectingWhy = true;
+              analysis = text.replace("Why this flopped:", "").trim();
             } else if (collectingWhy && text.startsWith("How you can use")) {
               collectingWhy = false;
             } else if (
@@ -135,19 +135,19 @@ class CreatorHooksScraper {
               text.length > 0 &&
               !text.startsWith("Examples of")
             ) {
-              whyThisWorks += " " + text;
+              analysis += " " + text;
             }
 
             nextElement = nextElement.nextElementSibling;
           }
 
-          if (framework || hookScore) {
+          if (framework || hookScore || analysis) {
             hooks.push({
               title: extractedTitle || hookTitle,
               sectionTitle: hookTitle,
               framework: framework,
               hookScore: hookScore,
-              whyThisWorks: whyThisWorks.trim(),
+              why: analysis.trim(),
             });
           }
         });
@@ -280,7 +280,7 @@ class CreatorHooksScraper {
         hook.title,
         hook.framework,
         hook.hookScore,
-        hook.whyThisWorks,
+        hook.why,
       ]);
 
       // Clear existing data and write new data
@@ -320,7 +320,7 @@ class CreatorHooksScraper {
       const rows = this.allHooks
         .map(
           (hook) =>
-            `"${hook.title}","${hook.framework}","${hook.hookScore}","${hook.whyThisWorks}"`,
+            `"${hook.title}","${hook.framework}","${hook.hookScore}","${hook.why}"`,
         )
         .join("\n");
 
