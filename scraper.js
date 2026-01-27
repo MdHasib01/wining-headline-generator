@@ -107,17 +107,17 @@ class CreatorHooksScraper {
             const text = nextElement.textContent.trim();
 
             // Extract Title
-            if (text.startsWith("Title:")) {
-              extractedTitle = text.replace("Title:", "").trim();
+            if (text.match(/^Title:/i)) {
+              extractedTitle = text.replace(/^Title:/i, "").trim();
             }
 
             // Extract Framework
-            if (text.startsWith("Framework:")) {
-              framework = text.replace("Framework:", "").trim();
+            if (text.match(/^Framework:/i)) {
+              framework = text.replace(/^Framework:/i, "").trim();
             }
 
             // Extract Hook Score
-            if (text.includes("Hook score")) {
+            if (text.match(/Hook score/i)) {
               const scoreMatch = text.match(/[+\-]?\d+/);
               if (scoreMatch) {
                 hookScore = scoreMatch[0];
@@ -143,6 +143,7 @@ class CreatorHooksScraper {
 
           if (framework || hookScore) {
             hooks.push({
+              title: extractedTitle || hookTitle,
               sectionTitle: hookTitle,
               framework: framework,
               hookScore: hookScore,
@@ -264,14 +265,14 @@ class CreatorHooksScraper {
       // Prepare data for sheets
       const headers = [
         "Post URL",
-        "Section Title",
+        "Title",
         "Framework",
         "Hook Score",
         "Why This Works",
       ];
       const rows = this.allHooks.map((hook) => [
         hook.postUrl,
-        hook.sectionTitle,
+        hook.title,
         hook.framework,
         hook.hookScore,
         hook.whyThisWorks,

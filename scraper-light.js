@@ -92,17 +92,17 @@ class CreatorHooksScraperLight {
           const text = $next.text().trim();
 
           // Extract Title
-          if (text.startsWith("Title:")) {
-            extractedTitle = text.replace("Title:", "").trim();
+          if (text.match(/^Title:/i)) {
+            extractedTitle = text.replace(/^Title:/i, "").trim();
           }
 
           // Extract Framework
-          if (text.startsWith("Framework:")) {
-            framework = text.replace("Framework:", "").trim();
+          if (text.match(/^Framework:/i)) {
+            framework = text.replace(/^Framework:/i, "").trim();
           }
 
           // Extract Hook Score
-          if (text.includes("Hook score")) {
+          if (text.match(/Hook score/i)) {
             const scoreMatch = text.match(/[+\-]?\d+/);
             if (scoreMatch) {
               hookScore = scoreMatch[0];
