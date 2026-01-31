@@ -1,10 +1,10 @@
-const { ChatOpenAI } = require('@langchain/openai');
-const { PromptTemplate } = require('@langchain/core/prompts');
-const supabase = require('../lib/supabase');
-const { generateEmbedding } = require('./embeddings');
+const { ChatOpenAI } = require("@langchain/openai");
+const { PromptTemplate } = require("@langchain/core/prompts");
+const supabase = require("../lib/supabase");
+const { generateEmbedding } = require("./embeddings");
 
 const llm = new ChatOpenAI({
-  modelName: 'gpt-4o-mini',
+  modelName: "gpt-4o-mini",
   temperature: 0.7,
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -30,21 +30,28 @@ const ragPrompt = PromptTemplate.fromTemplate(RAG_PROMPT_TEMPLATE);
 async function searchSimilarHeadlines(query, limit = 5) {
   const embedding = await generateEmbedding(query);
 
-  const { data, error } = await supabase.rpc('match_headlines', {
+  const { data, error } = await supabase.rpc("match_headlines", {
     query_embedding: embedding,
     match_count: limit,
-    match_threshold: 0.7,
+    match_threshold: 0.2, // Lowered threshold to improve recall, but keep some relevance
   });
 
-  if (error) {
+  if (error || !data || data.length === 0) {
+    console.log(
+      "No relevant headlines found via vector search, falling back to top performing headlines",
+    );
+
     const fallbackData = await supabase
-      .from('headlines')
-      .select('title, framework, why, hook_score')
-      .limit(limit)
-      .order('created_at', { ascending: false });
+      .from("headlines")
+      .select("title, framework, why, hook_score")
+      .order("hook_score", { ascending: false, nullsFirst: false })
+      .limit(limit);
 
     if (fallbackData.error) {
-      console.error('Error fetching headlines:', fallbackData.error.message);
+      console.error(
+        "Error fetching fallback headlines:",
+        fallbackData.error.message,
+      );
       return [];
     }
 
@@ -59,18 +66,20 @@ function formatHeadlinesForContext(headlines) {
     .map(
       (h, idx) =>
         `${idx + 1}. "${h.title}"
-   - Framework: ${h.framework || 'N/A'}
-   - Hook Score: ${h.hook_score || 'N/A'}
-   - Why it works: ${h.why || 'N/A'}`,
+   - Framework: ${h.framework || "N/A"}
+   - Hook Score: ${h.hook_score || "N/A"}
+   - Why it works: ${h.why || "N/A"}`,
     )
-    .join('\n\n');
+    .join("\n\n");
 }
 
 async function generateHeadlineWithRAG(userQuery) {
   const similarHeadlines = await searchSimilarHeadlines(userQuery, 5);
 
   if (similarHeadlines.length === 0) {
-    throw new Error('No relevant headlines found in the database. Please ensure headlines are synced.');
+    throw new Error(
+      "No relevant headlines found in the database. Please ensure headlines are synced.",
+    );
   }
 
   const contextText = formatHeadlinesForContext(similarHeadlines);
