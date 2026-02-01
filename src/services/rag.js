@@ -1,5 +1,9 @@
 const { ChatOpenAI } = require("@langchain/openai");
-const { PromptTemplate } = require("@langchain/core/prompts");
+const {
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+} = require("@langchain/core/messages");
 const supabase = require("../lib/supabase");
 const { generateEmbedding } = require("./embeddings");
 
@@ -9,23 +13,44 @@ const llm = new ChatOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const RAG_PROMPT_TEMPLATE = `You are an expert marketing analyst specializing in content hooks and viral headlines.
-Based on the following winning headlines and frameworks from the Creator Hooks database, generate a headline suggestion for the user's topic.
-
-Context (winning headlines from database):
-{context}
-
-User Topic/Prompt: {query}
+const SYSTEM_PROMPT = `You are an expert marketing analyst specializing in content hooks and viral headlines.
+Based on winning headlines and frameworks from the Creator Hooks database, generate a headline suggestion for the user's topic.
 
 Instructions:
-1. Analyze the provided winning headlines and their characteristics
-2. Identify patterns in what makes headlines effective
-3. Generate 3 unique headline variations optimized for the given topic
-4. For each headline, briefly explain the framework or principle used from the examples
+1. Search for similar headlines in the database using the provided tool.
+2. Analyze the provided winning headlines and their characteristics.
+3. Identify patterns in what makes headlines effective.
+4. Generate 3 unique headline variations optimized for the given topic.
+5. For each headline, briefly explain the framework or principle used from the examples.
+
+IMPORTANT: If no relevant headlines are found in the database, DO NOT fail. Instead, use your own expert knowledge of viral marketing, curiosity gaps, and psychological triggers to generate the best possible headlines for the user's topic. Just mention that these are based on general viral principles.
 
 Provide clear, actionable headline suggestions that could perform well.`;
 
-const ragPrompt = PromptTemplate.fromTemplate(RAG_PROMPT_TEMPLATE);
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "search_headlines",
+      description:
+        "Search for winning headlines from the database to use as context/inspiration.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The topic or theme to search headlines for.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+];
+
+const llmWithTools = llm.bind({
+  tools: tools,
+});
 
 async function searchSimilarHeadlines(query, limit = 5) {
   const embedding = await generateEmbedding(query);
@@ -33,29 +58,12 @@ async function searchSimilarHeadlines(query, limit = 5) {
   const { data, error } = await supabase.rpc("match_headlines", {
     query_embedding: embedding,
     match_count: limit,
-    match_threshold: 0.2, // Lowered threshold to improve recall, but keep some relevance
+    match_threshold: 0.5, // Increased threshold to ensure relevance
   });
 
   if (error || !data || data.length === 0) {
-    console.log(
-      "No relevant headlines found via vector search, falling back to top performing headlines",
-    );
-
-    const fallbackData = await supabase
-      .from("headlines")
-      .select("title, framework, why, hook_score")
-      .order("hook_score", { ascending: false, nullsFirst: false })
-      .limit(limit);
-
-    if (fallbackData.error) {
-      console.error(
-        "Error fetching fallback headlines:",
-        fallbackData.error.message,
-      );
-      return [];
-    }
-
-    return fallbackData.data || [];
+    console.log("No relevant headlines found via vector search.");
+    return [];
   }
 
   return data || [];
@@ -74,29 +82,59 @@ function formatHeadlinesForContext(headlines) {
 }
 
 async function generateHeadlineWithRAG(userQuery) {
-  const similarHeadlines = await searchSimilarHeadlines(userQuery, 5);
+  const messages = [
+    new SystemMessage(SYSTEM_PROMPT),
+    new HumanMessage(userQuery),
+  ];
 
-  if (similarHeadlines.length === 0) {
-    throw new Error(
-      "No relevant headlines found in the database. Please ensure headlines are synced.",
-    );
+  const response = await llmWithTools.invoke(messages);
+
+  // Check if the model decided to call the tool
+  if (response.tool_calls && response.tool_calls.length > 0) {
+    const toolCall = response.tool_calls[0];
+
+    if (toolCall.name === "search_headlines") {
+      const args = toolCall.args;
+      const similarHeadlines = await searchSimilarHeadlines(args.query, 5);
+
+      const contextText = formatHeadlinesForContext(similarHeadlines);
+
+      let toolOutputContent = contextText;
+      if (!contextText) {
+        toolOutputContent =
+          "No relevant headlines found in the database. Please generate high-quality viral headlines based on your internal expert knowledge of marketing frameworks instead.";
+      }
+
+      // Add the assistant's tool call message
+      messages.push(response);
+
+      // Add the tool output message
+      messages.push(
+        new ToolMessage({
+          tool_call_id: toolCall.id,
+          content: toolOutputContent,
+          name: "search_headlines",
+        }),
+      );
+
+      // Generate the final response using the tool output
+      const finalResponse = await llm.invoke(messages);
+
+      return {
+        headline: finalResponse.content,
+        sources: similarHeadlines.map((h) => ({
+          title: h.title,
+          framework: h.framework,
+        })),
+      };
+    }
   }
 
-  const contextText = formatHeadlinesForContext(similarHeadlines);
-
-  const formattedPrompt = await ragPrompt.format({
-    context: contextText,
-    query: userQuery,
-  });
-
-  const response = await llm.invoke(formattedPrompt);
-
+  // If no tool was called (unlikely with the system prompt), return the response
+  // Or we could force a search if desired.
   return {
     headline: response.content,
-    sources: similarHeadlines.map((h) => ({
-      title: h.title,
-      framework: h.framework,
-    })),
+    sources: [],
   };
 }
 
