@@ -1,29 +1,34 @@
-require('dotenv').config();
-const express = require('express');
-const ragRoutes = require('./routes/rag');
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const ragRoutes = require("./routes/rag");
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 
-app.use('/api/rag', ragRoutes);
+app.use("/api/rag", ragRoutes);
 
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({
-    status: 'ok',
-    service: 'creator-hooks-rag-api',
+    status: "ok",
+    service: "creator-hooks-rag-api",
     timestamp: new Date().toISOString(),
   });
 });
 
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  console.error("Unhandled error:", err);
 
   res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred',
+    error: "Internal server error",
+    message:
+      process.env.NODE_ENV === "development"
+        ? err.message
+        : "An unexpected error occurred",
   });
 });
 
