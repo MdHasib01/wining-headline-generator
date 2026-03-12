@@ -1,12 +1,44 @@
-const { ChatOpenAI } = require("@langchain/openai");
-const { HumanMessage, SystemMessage } = require("@langchain/core/messages");
+const axios = require("axios");
 const supabase = require("../lib/supabase");
 
-const llm = new ChatOpenAI({
-  modelName: "gpt-4o-mini",
-  temperature: 0.7,
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const MODEL = "claude-3-5-sonnet-latest";
+
+async function createMessage(prompt, { temperature = 0.7, maxTokens = 1024 } = {}) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing ANTHROPIC_API_KEY environment variable");
+  }
+
+  const response = await axios.post(
+    ANTHROPIC_API_URL,
+    {
+      model: MODEL,
+      max_tokens: maxTokens,
+      temperature,
+      messages: [{ role: "user", content: prompt }],
+    },
+    {
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      timeout: 30000,
+    },
+  );
+
+  const content = response?.data?.content || [];
+  const text = content
+    .map((block) => {
+      if (typeof block === "string") return block;
+      if (block && block.type === "text") return block.text || "";
+      return "";
+    })
+    .join("");
+
+  return text.trim();
+}
 
 async function getWinningHeadlines(limit = 30) {
   const { data, error } = await supabase
@@ -27,9 +59,9 @@ async function generateDraftHeadlines(topic) {
 Focus on high click-through rate.
 Return them as a JSON array of strings. Do not include markdown formatting.`;
 
-  const response = await llm.invoke([new HumanMessage(prompt)]);
+  const response = await createMessage(prompt, { temperature: 0.6, maxTokens: 300 });
   try {
-    let content = response.content.trim();
+    let content = response.trim();
     if (content.startsWith("```json")) {
       content = content.replace(/^```json/, "").replace(/```$/, "");
     } else if (content.startsWith("```")) {
@@ -39,7 +71,7 @@ Return them as a JSON array of strings. Do not include markdown formatting.`;
   } catch (e) {
     console.error("Error parsing draft headlines:", e);
     // Fallback simple parsing if JSON fails
-    return response.content
+    return response
       .split("\n")
       .filter((l) => l.trim())
       .map((l) => l.replace(/^\d+\.\s*/, "").replace(/"/g, ""));
@@ -51,8 +83,8 @@ async function classifyTopic(topic) {
 Topic: "${topic}"
 Return only the framework name. If unsure, choose Curiosity.`;
 
-  const response = await llm.invoke([new HumanMessage(prompt)]);
-  return response.content.trim();
+  const response = await createMessage(prompt, { temperature: 0.2, maxTokens: 60 });
+  return response.trim();
 }
 
 function filterAndSelectExamples(examples, category, targetCount = 5) {
@@ -122,9 +154,9 @@ Focus on:
 Return the result as a valid JSON array of objects with keys: "headline", "framework_used", "explanation".
 Do not include markdown formatting.`;
 
-  const response = await llm.invoke([new HumanMessage(prompt)]);
+  const response = await createMessage(prompt, { temperature: 0.7, maxTokens: 1200 });
   try {
-    let content = response.content.trim();
+    let content = response.trim();
     if (content.startsWith("```json")) {
       content = content.replace(/^```json/, "").replace(/```$/, "");
     } else if (content.startsWith("```")) {
