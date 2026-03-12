@@ -1,43 +1,94 @@
 const axios = require("axios");
 const supabase = require("../lib/supabase");
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const MODEL = "claude-3-5-sonnet-latest";
+const ANTHROPIC_API_URL =
+  process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages";
+const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
+const MODEL = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+const FALLBACK_MODELS = [
+  "claude-3-5-sonnet-20241022",
+  "claude-3-sonnet-20240229",
+  "claude-3-haiku-20240307",
+];
 
-async function createMessage(prompt, { temperature = 0.7, maxTokens = 1024 } = {}) {
+function buildModelCandidates() {
+  const candidates = [];
+  if (process.env.ANTHROPIC_MODEL) {
+    candidates.push(process.env.ANTHROPIC_MODEL);
+  }
+  if (MODEL && !candidates.includes(MODEL)) {
+    candidates.push(MODEL);
+  }
+  for (const model of FALLBACK_MODELS) {
+    if (!candidates.includes(model)) {
+      candidates.push(model);
+    }
+  }
+  return candidates;
+}
+
+async function createMessage(
+  prompt,
+  { temperature = 0.7, maxTokens = 1024 } = {},
+) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error("Missing ANTHROPIC_API_KEY environment variable");
   }
 
-  const response = await axios.post(
-    ANTHROPIC_API_URL,
-    {
-      model: MODEL,
-      max_tokens: maxTokens,
-      temperature,
-      messages: [{ role: "user", content: prompt }],
-    },
-    {
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      timeout: 30000,
-    },
-  );
+  const modelsToTry = buildModelCandidates();
 
-  const content = response?.data?.content || [];
-  const text = content
-    .map((block) => {
-      if (typeof block === "string") return block;
-      if (block && block.type === "text") return block.text || "";
-      return "";
-    })
-    .join("");
+  for (let i = 0; i < modelsToTry.length; i += 1) {
+    const model = modelsToTry[i];
+    try {
+      const response = await axios.post(
+        ANTHROPIC_API_URL,
+        {
+          model,
+          max_tokens: maxTokens,
+          temperature,
+          messages: [{ role: "user", content: prompt }],
+        },
+        {
+          headers: {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+          timeout: 30000,
+        },
+      );
 
-  return text.trim();
+      const content = response?.data?.content || [];
+      const text = content
+        .map((block) => {
+          if (typeof block === "string") return block;
+          if (block && block.type === "text") return block.text || "";
+          return "";
+        })
+        .join("");
+
+      return text.trim();
+    } catch (error) {
+      const status = error?.response?.status;
+      const hasMoreModels = i < modelsToTry.length - 1;
+      if (status === 404 && hasMoreModels) {
+        continue;
+      }
+      if (status) {
+        const details =
+          error?.response?.data?.error ||
+          error?.response?.data?.message ||
+          error.message;
+        throw new Error(
+          `Anthropic request failed (${status}) for model "${model}": ${details}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Anthropic request failed for all configured models");
 }
 
 async function getWinningHeadlines(limit = 30) {
@@ -59,7 +110,10 @@ async function generateDraftHeadlines(topic) {
 Focus on high click-through rate.
 Return them as a JSON array of strings. Do not include markdown formatting.`;
 
-  const response = await createMessage(prompt, { temperature: 0.6, maxTokens: 300 });
+  const response = await createMessage(prompt, {
+    temperature: 0.6,
+    maxTokens: 300,
+  });
   try {
     let content = response.trim();
     if (content.startsWith("```json")) {
@@ -83,7 +137,10 @@ async function classifyTopic(topic) {
 Topic: "${topic}"
 Return only the framework name. If unsure, choose Curiosity.`;
 
-  const response = await createMessage(prompt, { temperature: 0.2, maxTokens: 60 });
+  const response = await createMessage(prompt, {
+    temperature: 0.2,
+    maxTokens: 60,
+  });
   return response.trim();
 }
 
@@ -154,7 +211,10 @@ Focus on:
 Return the result as a valid JSON array of objects with keys: "headline", "framework_used", "explanation".
 Do not include markdown formatting.`;
 
-  const response = await createMessage(prompt, { temperature: 0.7, maxTokens: 1200 });
+  const response = await createMessage(prompt, {
+    temperature: 0.7,
+    maxTokens: 1200,
+  });
   try {
     let content = response.trim();
     if (content.startsWith("```json")) {
