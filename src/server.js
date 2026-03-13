@@ -12,10 +12,10 @@ app.use(express.json());
 
 app.use("/api/rag", ragRoutes);
 
-app.get("/health", (req, res) => {
+app.get("/", (req, res) => {
   res.status(200).json({
-    status: "ok",
-    service: "creator-hooks-rag-api",
+    status: "Graytor API is running",
+    service: "graytor-hooks-rag-api",
     timestamp: new Date().toISOString(),
   });
 });
