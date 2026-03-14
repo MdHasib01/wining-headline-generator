@@ -249,7 +249,12 @@ Here are proven winning headlines (Hooks) that performed well, and why they work
 ${examplesText}
 
 Your task:
-Rewrite the draft headlines into 5-10 optimized viral headlines.
+Rewrite the draft headlines into optimized viral headlines.
+Follow these rules for the number of headlines:
+1. If the user specifies a number in their topic (e.g., "10 headlines about..."), generate exactly that number.
+2. If no number is specified, generate between 5 and 20 headlines.
+3. Minimum headlines generated must always be at least 5.
+
 Apply the principles and styles from the winning examples.
 You can mix and match frameworks, but lean towards the "${category}" style if appropriate.
 Focus on:
