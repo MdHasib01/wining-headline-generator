@@ -29,7 +29,7 @@ function buildModelCandidates() {
 
 async function createMessage(
   prompt,
-  { temperature = 0.7, maxTokens = 1024 } = {},
+  { temperature = 0.7, maxTokens = 4096, system = "" } = {},
 ) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -41,23 +41,24 @@ async function createMessage(
   for (let i = 0; i < modelsToTry.length; i += 1) {
     const model = modelsToTry[i];
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model,
-          max_tokens: maxTokens,
-          temperature,
-          messages: [{ role: "user", content: prompt }],
+      const body = {
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        messages: [{ role: "user", content: prompt }],
+      };
+      if (system) {
+        body.system = system;
+      }
+
+      const response = await axios.post(ANTHROPIC_API_URL, body, {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
         },
-        {
-          headers: {
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-          },
-          timeout: 30000,
-        },
-      );
+        timeout: 60000,
+      });
 
       const content = response?.data?.content || [];
       const text = content
@@ -91,6 +92,47 @@ async function createMessage(
   throw new Error("Anthropic request failed for all configured models");
 }
 
+function extractJSON(text) {
+  try {
+    const trimmed = text.trim();
+    // Try simple parse first
+    return JSON.parse(trimmed);
+  } catch (e) {
+    // Look for first [ or { and last ] or }
+    const startBracket = text.indexOf("[");
+    const endBracket = text.lastIndexOf("]");
+    const startBrace = text.indexOf("{");
+    const endBrace = text.lastIndexOf("}");
+
+    let start = -1;
+    let end = -1;
+
+    // Determine if it's an array or an object
+    if (
+      startBracket !== -1 &&
+      (startBrace === -1 || startBracket < startBrace)
+    ) {
+      start = startBracket;
+      end = endBracket;
+    } else if (startBrace !== -1) {
+      start = startBrace;
+      end = endBrace;
+    }
+
+    if (start !== -1 && end !== -1 && end > start) {
+      const jsonStr = text.substring(start, end + 1);
+      try {
+        return JSON.parse(jsonStr);
+      } catch (innerError) {
+        throw new Error(
+          `Failed to parse extracted JSON: ${innerError.message}`,
+        );
+      }
+    }
+    throw e;
+  }
+}
+
 async function getWinningHeadlines(limit = 30) {
   const { data, error } = await supabase
     .from("headlines")
@@ -106,29 +148,33 @@ async function getWinningHeadlines(limit = 30) {
 }
 
 async function generateDraftHeadlines(topic) {
-  const prompt = `You are a viral marketing expert. Generate 3 draft headlines for the topic: "${topic}".
-Focus on high click-through rate.
-Return them as a JSON array of strings. Do not include markdown formatting.`;
+  const system =
+    "You are a viral marketing expert. You must respond ONLY with a JSON array of strings. Do not include any introductory or concluding text.";
+  const prompt = `Generate 3 draft headlines for the topic: "${topic}". Focus on high click-through rate.`;
 
   const response = await createMessage(prompt, {
     temperature: 0.6,
-    maxTokens: 300,
+    maxTokens: 1024,
+    system,
   });
   try {
-    let content = response.trim();
-    if (content.startsWith("```json")) {
-      content = content.replace(/^```json/, "").replace(/```$/, "");
-    } else if (content.startsWith("```")) {
-      content = content.replace(/^```/, "").replace(/```$/, "");
-    }
-    return JSON.parse(content);
+    return extractJSON(response);
   } catch (e) {
     console.error("Error parsing draft headlines:", e);
     // Fallback simple parsing if JSON fails
     return response
       .split("\n")
-      .filter((l) => l.trim())
-      .map((l) => l.replace(/^\d+\.\s*/, "").replace(/"/g, ""));
+      .filter(
+        (l) => l.trim() && !l.trim().startsWith("[") && !l.trim().endsWith("]"),
+      )
+      .map((l) =>
+        l
+          .replace(/^\d+\.\s*/, "")
+          .replace(/"/g, "")
+          .replace(/^-/, "")
+          .trim(),
+      )
+      .filter((l) => l.length > 0);
   }
 }
 
@@ -139,7 +185,7 @@ Return only the framework name. If unsure, choose Curiosity.`;
 
   const response = await createMessage(prompt, {
     temperature: 0.2,
-    maxTokens: 60,
+    maxTokens: 100,
   });
   return response.trim();
 }
@@ -189,8 +235,11 @@ async function generateFinalHeadlines(drafts, examples, category, topic) {
     )
     .join("\n\n");
 
-  const prompt = `You are an expert headline writer.
-The user's topic is: "${topic}"
+  const system = `You are an expert headline writer. You must respond ONLY with a JSON array of objects.
+Each object must have these keys: "headline", "framework_used", "explanation".
+Do not include any introductory or concluding text.`;
+
+  const prompt = `The user's topic is: "${topic}"
 The predicted viral framework is: ${category}
 
 Here are some initial draft headlines:
@@ -206,23 +255,15 @@ You can mix and match frameworks, but lean towards the "${category}" style if ap
 Focus on:
 - Psychological triggers (Curiosity, Gap, Negative Bias, etc.)
 - Punchiness
-- Clarity
-
-Return the result as a valid JSON array of objects with keys: "headline", "framework_used", "explanation".
-Do not include markdown formatting.`;
+- Clarity`;
 
   const response = await createMessage(prompt, {
     temperature: 0.7,
-    maxTokens: 1200,
+    maxTokens: 4096,
+    system,
   });
   try {
-    let content = response.trim();
-    if (content.startsWith("```json")) {
-      content = content.replace(/^```json/, "").replace(/```$/, "");
-    } else if (content.startsWith("```")) {
-      content = content.replace(/^```/, "").replace(/```$/, "");
-    }
-    return JSON.parse(content);
+    return extractJSON(response);
   } catch (e) {
     console.error("Error parsing final headlines:", e);
     return [
