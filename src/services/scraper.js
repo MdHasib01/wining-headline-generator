@@ -1,10 +1,59 @@
-const puppeteer = require("puppeteer");
-const { google } = require("googleapis");
-const fs = require("fs").promises;
+import "dotenv/config";
+import puppeteer from "puppeteer";
+import { google } from "googleapis";
 
-// Google Sheets configuration
-const SPREADSHEET_ID = "1hdzFosH2FlouVSEcNa8skjjsAGGPQtwtyVfgYZMSjMg"; // Replace with your Google Sheet ID
-const CREDENTIALS_PATH = "./credentials.json"; // Path to your service account credentials
+const SPREADSHEET_ID =
+  process.env.GOOGLE_SPREADSHEET_ID || process.env.GOOGLE_SHEETS_ID;
+
+// Keep the same tab name used by this scraper. You can override explicitly.
+const SHEET_NAME = process.env.GOOGLE_HOOKS_SHEET_NAME || "CreatorHooksData";
+
+// Configure global options for the googleapis client
+// This helps with timeouts and retries on both auth and data requests
+google.options({
+  timeout: 60000, // 60 seconds
+  retry: true,
+  retryConfig: {
+    retry: 3,
+    retryDelay: 2000,
+    httpMethodsToRetry: ["GET", "POST", "PUT", "HEAD", "OPTIONS", "DELETE"],
+    statusCodesToRetry: [
+      [100, 199],
+      [408, 408],
+      [429, 429],
+      [500, 599],
+    ],
+    onRetryAttempt: (err) => {
+      console.log(`Retry attempt for Google API... ${err.message}`);
+    },
+  },
+});
+
+function getGoogleCredentialsFromEnv() {
+  const privateKey = process.env.GOOGLE_PRIVATE_KEY;
+  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+  const projectId = process.env.GOOGLE_PROJECT_ID;
+  const privateKeyId = process.env.GOOGLE_PRIVATE_KEY_ID;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+
+  if (!privateKey || !clientEmail || !projectId || !privateKeyId || !clientId) {
+    throw new Error(
+      "Missing Google service account env vars. Required: GOOGLE_PROJECT_ID, GOOGLE_CLIENT_EMAIL, GOOGLE_CLIENT_ID, GOOGLE_PRIVATE_KEY_ID, GOOGLE_PRIVATE_KEY",
+    );
+  }
+
+  // dotenv loads `\n` as two characters by default; convert to real newlines.
+  const normalizedPrivateKey = privateKey.replace(/\\n/g, "\n");
+
+  return {
+    type: "service_account",
+    project_id: projectId,
+    client_email: clientEmail,
+    client_id: clientId,
+    private_key_id: privateKeyId,
+    private_key: normalizedPrivateKey,
+  };
+}
 
 class CreatorHooksScraper {
   constructor() {
@@ -30,7 +79,6 @@ class CreatorHooksScraper {
     try {
       await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
 
-      // Extract post URLs
       const postUrls = await page.evaluate(() => {
         const articles = document.querySelectorAll("article h2.entry-title a");
         return Array.from(articles).map((a) => a.href);
@@ -38,12 +86,9 @@ class CreatorHooksScraper {
 
       console.log(`Found ${postUrls.length} posts on page ${pageNumber}`);
 
-      // Check if there's a next page
       const hasNextPage = await page.evaluate(() => {
         const nextLink = document.querySelector(".nav-previous a");
         if (nextLink) return true;
-
-        // Fallback: look for any link with "Next" text
         const allLinks = Array.from(document.querySelectorAll("a"));
         return allLinks.some((link) => link.textContent.includes("Next"));
       });
@@ -69,30 +114,17 @@ class CreatorHooksScraper {
 
       const postData = await page.evaluate(() => {
         const hooks = [];
-
-        // Find all sections with titles and frameworks
         const content = document.querySelector(".entry-content");
-        if (!content) {
-          console.log("No .entry-content found!");
-          return hooks;
-        }
+        if (!content) return hooks;
 
-        // Look for patterns in the content
         const headings = content.querySelectorAll("h1, h2");
-        console.log(`Found ${headings.length} headings`);
 
         headings.forEach((heading, index) => {
-          // Skip the main title and look for hook sections
           if (index === 0) return;
 
           const hookTitle = heading.textContent.trim();
+          if (hookTitle.includes("Creator Hooks Pro")) return;
 
-          // Skip advertisement sections
-          if (hookTitle.includes("Creator Hooks Pro")) {
-            return;
-          }
-
-          // Get all content until next heading
           let nextElement = heading.nextElementSibling;
           let framework = "";
           let hookScore = "";
@@ -103,25 +135,16 @@ class CreatorHooksScraper {
           while (nextElement && !["H1", "H2"].includes(nextElement.tagName)) {
             const text = nextElement.textContent.trim();
 
-            // Extract Title
             if (text.match(/^Title:/i)) {
               extractedTitle = text.replace(/^Title:/i, "").trim();
             }
-
-            // Extract Framework
             if (text.match(/^Framework:/i)) {
               framework = text.replace(/^Framework:/i, "").trim();
             }
-
-            // Extract Hook Score
             if (text.match(/Hook score/i)) {
               const scoreMatch = text.match(/[+\-]?\d+/);
-              if (scoreMatch) {
-                hookScore = scoreMatch[0];
-              }
+              if (scoreMatch) hookScore = scoreMatch[0];
             }
-
-            // Extract Why this works or Why this flopped
             if (text.startsWith("Why this works:")) {
               collectingWhy = true;
               analysis = text.replace("Why this works:", "").trim();
@@ -169,7 +192,6 @@ class CreatorHooksScraper {
     let hasMorePages = true;
     const allPostUrls = [];
 
-    // Enable console logging from inside page.evaluate
     this.browser.on("targetcreated", async (target) => {
       const page = await target.page();
       if (page) {
@@ -181,41 +203,20 @@ class CreatorHooksScraper {
       const { postUrls, hasNextPage } =
         await this.scrapeListingPage(currentPage);
 
-      if (postUrls.length === 0) {
-        console.log(`No posts found on page ${currentPage}. Stopping.`);
-        break;
-      }
+      if (postUrls.length === 0) break;
 
       allPostUrls.push(...postUrls);
       hasMorePages = hasNextPage;
-
-      if (!hasMorePages) {
-        console.log(
-          `No next page detected after page ${currentPage}. Stopping.`,
-        );
-      }
-
       currentPage++;
-
-      // Be respectful with rate limiting
       await this.delay(1000);
     }
 
-    console.log(`\nTotal posts found: ${allPostUrls.length}`);
-
-    // Now scrape each post
     for (let i = 0; i < allPostUrls.length; i++) {
-      console.log(`\nProcessing post ${i + 1}/${allPostUrls.length}`);
+      console.log(`Processing post ${i + 1}/${allPostUrls.length}`);
       const hooks = await this.scrapePost(allPostUrls[i]);
-
       hooks.forEach((hook) => {
-        this.allHooks.push({
-          postUrl: allPostUrls[i],
-          ...hook,
-        });
+        this.allHooks.push({ postUrl: allPostUrls[i], ...hook });
       });
-
-      // Rate limiting
       await this.delay(1500);
     }
 
@@ -223,121 +224,127 @@ class CreatorHooksScraper {
   }
 
   async ensureSheetExists(sheets, title) {
-    try {
-      const response = await sheets.spreadsheets.get({
-        spreadsheetId: SPREADSHEET_ID,
-      });
-
-      const sheetExists = response.data.sheets.some(
-        (sheet) => sheet.properties.title === title,
-      );
-
-      if (!sheetExists) {
-        console.log(`Sheet '${title}' does not exist. Creating it...`);
-        await sheets.spreadsheets.batchUpdate({
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        console.log(`Checking if sheet "${title}" exists...`);
+        const response = await sheets.spreadsheets.get({
           spreadsheetId: SPREADSHEET_ID,
-          resource: {
-            requests: [
-              {
-                addSheet: {
-                  properties: {
-                    title: title,
-                  },
-                },
-              },
-            ],
-          },
         });
-        console.log(`Sheet '${title}' created successfully.`);
+        const sheetExists = response.data.sheets.some(
+          (sheet) => sheet.properties.title === title,
+        );
+
+        if (!sheetExists) {
+          console.log(`Sheet "${title}" not found, creating it...`);
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: SPREADSHEET_ID,
+            resource: {
+              requests: [{ addSheet: { properties: { title } } }],
+            },
+          });
+          console.log(`Sheet "${title}" created successfully.`);
+        } else {
+          console.log(`Sheet "${title}" already exists.`);
+        }
+        return; // Success, exit retry loop
+      } catch (error) {
+        retries--;
+        console.error(
+          `Error checking/creating sheet (Retries left: ${retries}):`,
+          error.message,
+        );
+        if (retries === 0) throw error;
+        await this.delay(2000); // Wait before retrying
       }
-    } catch (error) {
-      console.error("Error checking/creating sheet:", error.message);
-      throw error;
     }
   }
 
-  async saveToGoogleSheet() {
+  async getSheetsClient() {
     try {
-      // Load credentials
-      const credentials = JSON.parse(
-        await fs.readFile(CREDENTIALS_PATH, "utf8"),
-      );
-
-      // Authenticate
+      const credentials = getGoogleCredentialsFromEnv();
       const auth = new google.auth.GoogleAuth({
         credentials,
         scopes: ["https://www.googleapis.com/auth/spreadsheets"],
       });
 
-      const sheets = google.sheets({ version: "v4", auth });
+      return google.sheets({ version: "v4", auth });
+    } catch (error) {
+      console.error("Error initializing Google Sheets client:", error.message);
+      throw error;
+    }
+  }
 
-      const SHEET_NAME = "CreatorHooksData";
-      await this.ensureSheetExists(sheets, SHEET_NAME);
-
-      // Prepare data for sheets
-      const headers = ["Title", "Framework", "Hook Score", "Why"];
-      const rows = this.allHooks.map((hook) => [
-        hook.title,
-        hook.framework,
-        hook.hookScore,
-        hook.why,
-      ]);
-
-      // Clear existing data and write new data
-      await sheets.spreadsheets.values.clear({
+  async getExistingRows(sheets) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
-        range: `'${SHEET_NAME}'!A:D`,
+        range: `'${SHEET_NAME}'!A2:D`,
       });
+      return res.data.values || [];
+    } catch {
+      return [];
+    }
+  }
 
+  async saveToGoogleSheet() {
+    if (!SPREADSHEET_ID) {
+      throw new Error(
+        "GOOGLE_SPREADSHEET_ID (or GOOGLE_SHEETS_ID) is not set in .env",
+      );
+    }
+
+    const sheets = await this.getSheetsClient();
+    await this.ensureSheetExists(sheets, SHEET_NAME);
+
+    const existingRows = await this.getExistingRows(sheets);
+    const existingKeys = new Set(
+      existingRows.map(
+        (row) => `${row[0] || ""}|${row[1] || ""}|${row[3] || ""}`,
+      ),
+    );
+
+    const headers = ["Title", "Framework", "Hook Score", "Why"];
+    const newRows = this.allHooks.filter((hook) => {
+      const key = `${hook.title}|${hook.framework}|${hook.why}`;
+      return !existingKeys.has(key);
+    });
+
+    if (newRows.length === 0) {
+      console.log("No new hooks to add.");
+      return;
+    }
+
+    if (existingRows.length === 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
         range: `'${SHEET_NAME}'!A1`,
         valueInputOption: "RAW",
         resource: {
-          values: [headers, ...rows],
+          values: [
+            headers,
+            ...newRows.map((h) => [h.title, h.framework, h.hookScore, h.why]),
+          ],
         },
       });
-
-      console.log(
-        `\n✓ Successfully saved ${rows.length} hooks to Google Sheet!`,
-      );
-      console.log(
-        `View your sheet here: https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`,
-      );
-
-      // Also save to CSV
-      await this.saveToCSV();
-    } catch (error) {
-      console.error("Error saving to Google Sheet:", error.message);
-      // Fallback: save to CSV
-      await this.saveToCSV();
+    } else {
+      const nextRow = existingRows.length + 2;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `'${SHEET_NAME}'!A${nextRow}`,
+        valueInputOption: "RAW",
+        resource: {
+          values: newRows.map((h) => [
+            h.title,
+            h.framework,
+            h.hookScore,
+            h.why,
+          ]),
+        },
+      });
     }
-  }
 
-  async saveToCSV() {
-    try {
-      const headers = "Title,Framework,Hook Score,Why\n";
-      const rows = this.allHooks
-        .map(
-          (hook) =>
-            `"${hook.title}","${hook.framework}","${hook.hookScore}","${hook.why}"`,
-        )
-        .join("\n");
-
-      await fs.writeFile("creator-hooks-data-v2.csv", headers + rows);
-      console.log("\n✓ Saved data to creator-hooks-data-v2.csv");
-    } catch (error) {
-      if (error.code === "EBUSY") {
-        console.warn(
-          "\n⚠️  Warning: Could not save CSV file because it is open in another program.",
-        );
-        console.warn(
-          "Please close 'creator-hooks-data-v2.csv' and try again if you need the CSV output.",
-        );
-      } else {
-        console.error("\n❌ Error saving CSV:", error.message);
-      }
-    }
+    console.log(`Added ${newRows.length} new hooks to Google Sheet.`);
   }
 
   delay(ms) {
@@ -345,29 +352,19 @@ class CreatorHooksScraper {
   }
 
   async close() {
-    if (this.browser) {
-      await this.browser.close();
-    }
+    if (this.browser) await this.browser.close();
   }
 }
 
-// Main execution
-async function main() {
+async function runScraper() {
   const scraper = new CreatorHooksScraper();
-
   try {
     await scraper.initialize();
-    console.log("Starting scraper...\n");
-
-    const hooks = await scraper.scrapeAllPages();
-    console.log(`\nTotal hooks collected: ${hooks.length}`);
-
+    await scraper.scrapeAllPages();
     await scraper.saveToGoogleSheet();
-  } catch (error) {
-    console.error("Fatal error:", error);
   } finally {
     await scraper.close();
   }
 }
 
-main();
+export { CreatorHooksScraper, runScraper };
