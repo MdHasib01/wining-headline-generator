@@ -4,10 +4,10 @@ const router = express.Router();
 
 router.post("/generate", async (req, res) => {
   try {
-    const { userPrompt } = req.body;
+    const { topic } = req.body;
 
-    if (!userPrompt) {
-      return res.status(400).json({ error: "userPrompt is required" });
+    if (!topic) {
+      return res.status(400).json({ error: "topic is required" });
     }
 
     const n8nWebhookUrl =
@@ -18,7 +18,7 @@ router.post("/generate", async (req, res) => {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ userPrompt }),
+      body: JSON.stringify({ userPrompt: topic }),
     });
 
     if (!response.ok) {
