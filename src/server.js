@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import cron from "node-cron";
 import { runScraper } from "./services/scraper.js";
 import ragRoutes from "./routes/rag.js";
@@ -8,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 
 app.use("/api/rag", ragRoutes);
