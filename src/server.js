@@ -2,10 +2,15 @@ import "dotenv/config";
 import express from "express";
 import cron from "node-cron";
 import { runScraper } from "./services/scraper.js";
+import ragRoutes from "./routes/rag.js";
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
+
+app.use(express.json());
+
+app.use("/api/rag", ragRoutes);
 
 app.get("/", (req, res) => {
   res.send("graytor hooks api");
