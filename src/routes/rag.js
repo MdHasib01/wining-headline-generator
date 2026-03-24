@@ -11,7 +11,7 @@ router.post("/generate", async (req, res) => {
     }
 
     const n8nWebhookUrl =
-      "https://n8n.mdhasib.xyz/webhook-test/2c24ed3c-e5bc-4602-bb8a-25cfcbe2aab6";
+      "https://n8n.mdhasib.xyz/webhook/2c24ed3c-e5bc-4602-bb8a-25cfcbe2aab6";
 
     const response = await fetch(n8nWebhookUrl, {
       method: "POST",
